@@ -1,5 +1,5 @@
 import json
-from pydantic import BaseModel, create_model
+from pydantic import BaseModel
 
 
 class validator(BaseModel):
@@ -30,10 +30,10 @@ def args_parser(args: dict):
 
 
 def valid():
-    with open("../data/input/functions_definition.json", "r", encoding="utf-8") as f:
+    with open("data/input/functions_definition.json", "r") as f:
         data = json.load(f)
 
-    with open("../data/input/function_calling_tests.json", "r", encoding="utf-8") as f:
+    with open("data/input/function_calling_tests.json", "r") as f:
         prompt = json.load(f)
 
     functions: list[validator] = []
