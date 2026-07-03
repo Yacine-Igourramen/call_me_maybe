@@ -1,141 +1,270 @@
 from llm_sdk import Small_LLM_Model
 import json
 import numpy as np
+from we_need_parsing_here_too import valid
+
 
 model_object = Small_LLM_Model()
 
-prompt = "What is the sum of 265 and 345?"
+functions, inputs = valid()
+prompts = [i.prompt for i in inputs]
 
-# Read the vocabulary file
 path = model_object.get_path_to_vocab_file()
 with open(path, "r", encoding="utf-8") as f:
     vocab = json.load(f)
 
-# Create a fast array mapping token index directly to its string representation
-# This eliminates a costly list(vocab.keys()) conversion inside the logit loop
 dummy_logits = model_object.get_logits_from_input_ids([1])
 vocab_size = len(dummy_logits)
 
-# 2. Build the idx_to_token map explicitly matching that exact size
 idx_to_token = [None] * vocab_size
 for token_str, idx in vocab.items():
     if idx < vocab_size:
-        # Perform the necessary string replacements so the vocabulary 
-        # matches the raw string format used in your exp_output template
         sanitized = token_str
-
-        # Convert literal character escape strings into actual whitespace bytes
         sanitized = sanitized.replace("Ċ", "\n")
-
-        # Handle common tokenizer special space fragments (like SentencePiece/Llama marks)
         sanitized = sanitized.replace("Ġ", " ")
-
         idx_to_token[idx] = sanitized
 
-# Our exact expected structure template 
-# Note: In a real agent workflow, you would dynamically fill these template slots,
-# but for this structure constraint engine, we are forcing this exact sequence.
-exp_output = f'''
-{{
-"prompt": "{prompt}",
-"fn_name": "",
-"args": ""
-}}
-'''
+allowed_choices = [i.name for i in functions]
+descriptions = []
+for function in functions:
+    if function.parameter:
+        parameter_names = ", ".join(function.parameter.keys())
+    else:
+        parameter_names = "none"
+
+    if function.returns:
+        return_type = function.returns.get("type")
+    else:
+        return_type = "unknown"
+
+    descriptions.append(
+        f"function: {function.name} description: {function.description} "
+        f"parameters: {parameter_names} returns: {return_type}"
+    )
 
 
-class SglStructuralEngine:
-    def __init__(self, exp_output: str, idx_to_token: list):
-        self.schema = exp_output
+class TrieNode:
+    def __init__(self):
+        self.children = {}
+        self.is_end_of_word = False
+
+
+class SglFusedEngine:
+    def __init__(
+        self,
+        schema_template: str,
+        allowed_choices: list[str],
+        idx_to_token: list,
+    ):
         self.idx_to_token = idx_to_token
         self.vocab_size = len(idx_to_token)
+        self.slot_marker = "<LIST_CHOICE>"
 
-        # Total number of states is the length of our target schema string
-        self.total_states = len(exp_output)
+        if self.slot_marker not in schema_template:
+            raise ValueError(
+                f"Template must contain '{self.slot_marker}' to know where to "
+                "enforce the list."
+            )
 
-        # Pre-compiled transition map: [current_state_idx] -> array of valid token IDs
-        self.state_to_valid_tokens = {}
+        self.prefix_layout, self.suffix_layout = schema_template.split(
+            self.slot_marker
+        )
 
-        print("Compiling vocabulary transition map... (This runs ONCE)")
-        self._compile_transition_map()
+        self.trie_root = TrieNode()
+        for choice in allowed_choices:
+            self._insert_trie(choice)
 
-    def _compile_transition_map(self):
-        """
-        Pre-calculates which tokens are valid at every single structural character offset.
-        """
-        for state in range(self.total_states):
-            remaining_schema = self.schema[state:]
-            valid_token_ids = []
+        self.linear_cache = {}
+        self.trie_cache = {}
+        print("Pre-compiling Fused State Engine Maps... (This runs ONCE)")
+        self._precompile_linear(self.prefix_layout, "prefix")
+        self._precompile_trie(self.trie_root)
 
-            for idx, token_str in enumerate(self.idx_to_token):
-                if token_str is None:
-                    continue
+    def _insert_trie(self, word: str):
+        node = self.trie_root
+        for char in word:
+            if char not in node.children:
+                node.children[char] = TrieNode()
+            node = node.children[char]
+        node.is_end_of_word = True
 
-                # Check if this token matches the expected structure sequence at this position
-                if remaining_schema.startswith(token_str):
-                    valid_token_ids.append(idx)
-                # Handle cases where the remaining schema is shorter than the token itself
-                elif token_str.startswith(remaining_schema) and state + len(remaining_schema) == self.total_states:
-                    valid_token_ids.append(idx)
+    def _precompile_linear(self, layout_str: str, key_prefix: str):
+        total_chars = len(layout_str)
+        for state in range(total_chars + 1):
+            remaining = layout_str[state:]
+            valid_ids = []
+            if remaining:
+                for idx, token_str in enumerate(self.idx_to_token):
+                    if token_str is None or token_str == "":
+                        continue
+                    if remaining.startswith(token_str):
+                        valid_ids.append(idx)
+                        continue
+                    if token_str.startswith(remaining) and (
+                        state + len(remaining) == total_chars
+                    ):
+                        valid_ids.append(idx)
+            self.linear_cache[f"{key_prefix}_{state}"] = np.array(
+                valid_ids,
+                dtype=np.int32,
+            )
 
-            self.state_to_valid_tokens[state] = np.array(valid_token_ids, dtype=np.int32)
+    def _precompile_trie(self, node: TrieNode):
+        valid_ids = []
+        for idx, token_str in enumerate(self.idx_to_token):
+            if token_str is None or token_str == "":
+                continue
 
-    def mask_logits(self, logits: np.ndarray, current_state: int) -> np.ndarray:
-        """
-        Vectorized masking on the logits array using the pre-compiled transition index.
-        """
-        if current_state >= self.total_states:
-            return logits  # Generation complete
+            curr = node
+            possible = True
+            for char in token_str:
+                if char not in curr.children:
+                    possible = False
+                    break
+                curr = curr.children[char]
+            if possible:
+                valid_ids.append(idx)
 
-        # Get the allowed token IDs for our current character cursor position
-        allowed_indices = self.state_to_valid_tokens.get(current_state, np.array([], dtype=np.int32))
+        self.trie_cache[node] = np.array(valid_ids, dtype=np.int32)
+        for child in node.children.values():
+            self._precompile_trie(child)
 
-        # Create an all-infinite-negative mask
+    def mask_logits(self, logits: np.ndarray, mode: str, cursor) -> np.ndarray:
+        if mode in ("prefix", "args"):
+            allowed_indices = self.linear_cache.get(
+                f"{mode}_{cursor}",
+                np.array([], dtype=np.int32),
+            )
+        elif mode == "trie":
+            allowed_indices = self.trie_cache.get(
+                cursor,
+                np.array([], dtype=np.int32),
+            )
+        else:
+            allowed_indices = np.array([], dtype=np.int32)
+
         mask = np.full(self.vocab_size, -np.inf, dtype=np.float32)
-
-        if allowed_indices.size > 0:
-            # Unmask only the mathematically valid token paths
+        if allowed_indices is not None and allowed_indices.size > 0:
             mask[allowed_indices] = 0.0
-
-        # Add the mask to logits (valid indices get +0, invalid get -inf)
         return logits + mask
+
+    def advance_trie(self, node: TrieNode, token_str: str) -> TrieNode:
+        curr = node
+        for char in token_str:
+            curr = curr.children.get(char)
+            if curr is None:
+                return None
+        return curr
 
 
 def argmax(logits: np.ndarray) -> int:
-    """
-    Finds the index of the largest element, safely handling -inf values.
-    """
     return int(np.argmax(logits))
 
 
-# 1. Prepare initial model context
-feed = model_object.encode(prompt)[0].tolist()
-output_str: str = ""
+def build_args_layout(function) -> str:
+    if not function.parameter:
+        return "{\n}"
 
-print("--- Starting Structured JSON Generation Loop ---")
+    lines = []
+    for field_name in function.parameter.keys():
+        lines.append(f'"{field_name}": null')
 
-engine = SglStructuralEngine(exp_output, idx_to_token)
+    return "{\n" + ",\n".join(lines) + "\n}"
 
-# 2. Main Autoregressive Token Generation Loop
-i = 0
-while i < engine.total_states:
-    # Get the raw model logits array
-    logits = np.array(model_object.get_logits_from_input_ids(feed), dtype=np.float32)
-    # Apply structural masking based on current text length pointer
-    logits = engine.mask_logits(logits, i)
 
-    # Choose the highest scoring allowed token
-    next_token_idx = argmax(logits)
-    chosen_token_str = idx_to_token[next_token_idx]
+for prompt in prompts:
+    escaped_prompt = prompt.replace('"', '\\"')
 
-    # Update generation structures safely using the active index
-    feed.append(next_token_idx)
-    output_str += chosen_token_str
+    exp_output = (
+        f'{{\n"prompt": "{escaped_prompt}",\n'
+        '"fn_name": "<LIST_CHOICE>",\n'
+        '"args": <ARGS_CHOICE>\n}}'
+    )
 
-    print(f"Generated Token: {repr(chosen_token_str)} -> Current Result: {repr(output_str)}")
+    prefix_layout, rest_layout = exp_output.split("<LIST_CHOICE>")
+    choice_layout, suffix_layout = rest_layout.split("<ARGS_CHOICE>")
 
-    # CRITICAL FIX: Advance the state index by the actual length of the token string
-    i += len(chosen_token_str)
+    engine = SglFusedEngine(
+        prefix_layout + "<LIST_CHOICE>" + choice_layout,
+        allowed_choices,
+        idx_to_token,
+    )
 
-print("\n--- Final Forced Structured Output ---")
-print(output_str)
+    selection_context = (
+        "Choose the best function for the user request.\n"
+        f"User request: {prompt}\n\n"
+        "Available functions:\n"
+        + "\n".join(descriptions)
+    )
+
+    feed = model_object.encode(selection_context)[0].tolist()
+    output_str = ""
+
+    mode = "prefix"
+    cursor = 0
+    args_layout = ""
+
+    print("\n--- Starting Unified Layout & Selection Loop ---")
+
+    while True:
+        raw_logits = np.array(
+            model_object.get_logits_from_input_ids(feed),
+            dtype=np.float32,
+        )
+
+        masked_logits = engine.mask_logits(raw_logits, mode, cursor)
+        next_token_idx = argmax(masked_logits)
+
+        if masked_logits[next_token_idx] == -np.inf:
+            print(
+                f"\nBottleneck encountered in [{mode.upper()}] "
+                f"at index {cursor}. Forcing safety exit."
+            )
+            break
+
+        chosen_token_str = idx_to_token[next_token_idx]
+        feed.append(next_token_idx)
+        output_str += chosen_token_str
+
+        if mode == "prefix":
+            cursor += len(chosen_token_str)
+            if cursor >= len(engine.prefix_layout):
+                print("-> Layout prefix complete.")
+                mode = "trie"
+                cursor = engine.trie_root
+        elif mode == "trie":
+            next_node = engine.advance_trie(cursor, chosen_token_str)
+            if next_node is not None:
+                cursor = next_node
+
+            if cursor.is_end_of_word and (
+                not cursor.children or next_node is None
+            ):
+                print("-> Exact match hit.")
+
+                selected_function_obj = None
+                for function in functions:
+                    if function.name in output_str:
+                        selected_function_obj = function
+                        break
+
+                if selected_function_obj is None:
+                    raise ValueError(
+                        "Could not determine selected function name."
+                    )
+
+                args_layout = (
+                    choice_layout
+                    + build_args_layout(selected_function_obj)
+                    + suffix_layout
+                )
+                engine._precompile_linear(args_layout, "args")
+                mode = "args"
+                cursor = 0
+        elif mode == "args":
+            cursor += len(chosen_token_str)
+            if cursor >= len(args_layout):
+                break
+
+    print("\n--- Final Forced Structured JSON Result ---")
+    print(output_str)
