@@ -67,5 +67,17 @@
     "returns": {
       "type": "string"
     }
+  },
+  {
+    "name": "fn_kill",
+    "description": "Generate a killing message for a person by name.",
+    "parameters": {
+      "name": {
+        "type": "string"
+      }
+    },
+    "returns": {
+      "type": "string"
+    }
   }
 ]
