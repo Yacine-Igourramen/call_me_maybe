@@ -29,13 +29,21 @@ def args_parser(args: dict):
     return fields
 
 
-def valid():
-    with open("data/input/functions_definition.json", "r") as f:
-        data = json.load(f)
-
-    with open("data/input/function_calling_tests.json", "r") as f:
-        prompt = json.load(f)
-
+def valid(path_to_funcdef: str, path_to_prompts: str):
+    try:
+        with open(path_to_funcdef, "r") as f:
+            data = json.load(f)
+    except OSError:
+        raise ValueError("path to function definitions is invalid or doesn't have permision")
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON: {e}")
+    try:
+        with open(path_to_prompts, "r") as f:
+            prompt = json.load(f)
+    except OSError:
+        raise ValueError("path to prompts is invalid or doesn't have permision")
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON: {e}")
     functions: list[validator] = []
     prompts: list[prompt_valid] = []
 

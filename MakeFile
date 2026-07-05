@@ -1,5 +1,0 @@
-
-
-
-install:
-	uv pip install -e llm_sdk
