@@ -13,7 +13,7 @@ class prompt_valid(BaseModel):
     prompt: str
 
 
-def args_parser(args: dict):
+def args_parser(args: dict) -> dict:
     type_map = {
         "string": str,
         "number": float,
@@ -29,39 +29,44 @@ def args_parser(args: dict):
     return fields
 
 
-def valid(path_to_funcdef: str, path_to_prompts: str):
+def valid(
+    path_to_funcdef: str, path_to_prompts: str
+) -> tuple[list[validator], list[prompt_valid]]:
     try:
         with open(path_to_funcdef, "r") as f:
             data = json.load(f)
     except OSError:
-        raise ValueError("path to function definitions is invalid or doesn't have permision")
+        raise ValueError("path to function definitions is invalid")
     except json.JSONDecodeError as e:
-        raise ValueError(f"Invalid JSON: {e}")
+        raise ValueError(f"function definition Invalid JSON: {e}")
     try:
         with open(path_to_prompts, "r") as f:
             prompt = json.load(f)
     except OSError:
-        raise ValueError("path to prompts is invalid or doesn't have permision")
+        raise ValueError("path to prompts is invalid")
     except json.JSONDecodeError as e:
-        raise ValueError(f"Invalid JSON: {e}")
+        raise ValueError(f"prompt Invalid JSON: {e}")
     functions: list[validator] = []
     prompts: list[prompt_valid] = []
 
     try:
         for i in data:
-            obj = validator(name=i["name"],
-                            description=i["description"],
-                            parameter=args_parser(i["parameters"]),
-                            returns=i["returns"])
-            functions.append(obj)
+            function_obj = validator(
+                name=i["name"],
+                description=i["description"],
+                parameter=args_parser(i["parameters"]),
+                returns=i["returns"],
+            )
+            functions.append(function_obj)
         for i in prompt:
-            obj = prompt_valid(prompt=i["prompt"])
-            prompts.append(obj)
+            prompt_obj = prompt_valid(prompt=i["prompt"])
+            prompts.append(prompt_obj)
     except Exception:
-        print("functions_definition must include a name, description, parameters and return")
+        print("functions_definition must include a name, " +
+              "description, parameters and return")
 
     return functions, prompts
 
 
 if __name__ == "__main__":
-    valid()
+    pass
