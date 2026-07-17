@@ -90,10 +90,7 @@ def main() -> None:
     data = []
     for prompt in prompts:
         selection_context = (
-            "Analyze the user request carefully. Choose the correct function "
-            "name and fill in the parameters accurately.\n"
             f"User request: {prompt}\n\n"
-            "Available functions definitions pick correct ones:\n"
             + "\n".join(descriptions)
         )
         feed = model_object.encode(selection_context)[0].tolist()
@@ -116,41 +113,41 @@ def main() -> None:
         selected_func = None
 
         while True:
-            raw_logits = np.array(
-                model_object.get_logits_from_input_ids(feed), dtype=np.float32
-            )
+            sel_token = None
 
             if mode == "PREFIX":
-                masked_logits = engine.mask_logits_linear(
-                    raw_logits, linear_cursor
-                )
-            elif mode == "TRIE":
-                masked_logits = engine.mask_logits_trie(raw_logits,
-                                                        trie_cursor)
+                sel_token = engine.get_static_token_idx(linear_cursor)
             elif mode == "ARGS_STATIC":
-                masked_logits = engine.mask_logits_linear(
-                    raw_logits, linear_cursor
+                sel_token = engine.get_static_token_idx(linear_cursor)
+
+            if sel_token is not None:
+                next_token_idx = sel_token
+            else:
+                raw_logits = np.array(
+                    model_object.get_logits_from_input_ids(feed), dtype=np.float32
                 )
-            elif mode == "ARGS_DYNAMIC":
-                masked_logits = raw_logits
 
-                is_float_type = False
-                is_int_type = False
-                if selected_func and selected_func.parameter:
-                    current_param = param_keys[current_param_idx]
-                    param_type = (
-                        selected_func.parameter.get(current_param))
-                    is_float_type = (param_type == float)
-                    is_int_type = (param_type == int)
+                if mode == "TRIE":
+                    masked_logits = engine.mask_logits_trie(raw_logits, trie_cursor)
+                elif mode == "ARGS_DYNAMIC":
+                    masked_logits = raw_logits
 
-                if is_float_type and "." not in dynamic_value_buffer:
-                    masked_logits[float_terminator_mask] = -np.inf
+                    is_float_type = False
+                    is_int_type = False
+                    if selected_func and selected_func.parameter:
+                        current_param = param_keys[current_param_idx]
+                        param_type = selected_func.parameter.get(current_param)
+                        is_float_type = (param_type == float)
+                        is_int_type = (param_type == int)
 
-                # Replace the old loop with this:
-                if is_int_type:
-                    masked_logits[int_dot_mask] = -np.inf
+                    if is_float_type and "." not in dynamic_value_buffer:
+                        masked_logits[float_terminator_mask] = -np.inf
 
-            next_token_idx = argmax(masked_logits)
+                    if is_int_type:
+                        masked_logits[int_dot_mask] = -np.inf
+
+                next_token_idx = argmax(masked_logits)
+
             chosen_token_str = idx_to_token[next_token_idx]
             print(f"the chosen token is: {chosen_token_str}")
             feed.append(idx_to_model_id[next_token_idx])

@@ -23,7 +23,9 @@ class Engine:
 
         self.trie_cache: dict[TrieNode, np.ndarray] = {}
         self._precompile_trie(self.trie_root)
-        self.linear_cache: dict[int, np.ndarray] = {}
+        
+        # Maps layout cursor position directly to the exact single token index
+        self.linear_index_cache: dict[int, int] = {}
 
     def _insert_trie(self, word: str) -> None:
         node = self.trie_root
@@ -56,34 +58,36 @@ class Engine:
             self._precompile_trie(child)
 
     def set_linear_layout(self, layout_str: str) -> None:
-        self.linear_cache.clear()
+        """
+        Pre-computes the absolute best single token index for every 
+        character cursor offset inside the static layout string.
+        """
+        self.linear_index_cache.clear()
         total_chars = len(layout_str)
 
-        for state in range(total_chars + 1):
+        for state in range(total_chars):
             remaining = layout_str[state:]
-            valid_ids = []
+            best_token_idx = -1
+            max_len = 0
 
-            if remaining:
-                for idx, token_str in enumerate(self.idx_to_token):
-                    if not token_str:
-                        continue
-                    if len(token_str) > len(remaining):
-                        continue
-                    if not remaining.startswith(token_str):
-                        continue
-                    valid_ids.append(idx)
+            for idx, token_str in enumerate(self.idx_to_token):
+                if not token_str:
+                    continue
+                length = len(token_str)
+                # Keep the longest matching token to prevent tokenizer fragmentation
+                if length > len(remaining) or length <= max_len:
+                    continue
+                if remaining.startswith(token_str):
+                    max_len = length
+                    best_token_idx = idx
 
-            mask = self._base_mask.copy()
-            if valid_ids:
-                mask[valid_ids] = 0.0
-            self.linear_cache[state] = mask
+            self.linear_index_cache[state] = best_token_idx
 
-    def mask_logits_linear(
-        self, logits: np.ndarray, cursor: int
-    ) -> np.ndarray:
-        # Defaults to the baseline -inf mask if the cursor falls out of bounds
-        mask = self.linear_cache.get(cursor, self._base_mask)
-        return logits + mask
+    def get_static_token_idx(self, cursor: int) -> int:
+        """
+        Instantly returns the precompiled token index for a given layout position.
+        """
+        return self.linear_index_cache.get(cursor, -1)
 
     def mask_logits_trie(
         self, logits: np.ndarray, node: TrieNode

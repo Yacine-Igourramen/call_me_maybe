@@ -1,6 +1,6 @@
 [
   {
-    "prompt": "What is the product of 3 and 5?",
+    "prompt": "What is the product of -3 and 5?",
     "name": "fn_multiply_numbers",
     "parameters": {
       "a": 3.0,
@@ -58,7 +58,7 @@
     "prompt": "Read the file at /home/user/data.json with utf-8 encoding",
     "name": "fn_read_file",
     "parameters": {
-      "path": "path/to/file",
+      "path": "data.json",
       "encoding": "utf-8"
     }
   },
@@ -79,9 +79,10 @@
   },
   {
     "prompt": "Format template: Say \"hello\" to {name}",
-    "name": "fn_format_template",
+    "name": "fn_read_file",
     "parameters": {
-      "template": "prompt"
+      "path": "f1.txt",
+      "encoding": "utf-8"
     }
   }
 ]
