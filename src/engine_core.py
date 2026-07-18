@@ -107,3 +107,32 @@ class Engine:
 
 def argmax(logits: np.ndarray) -> int:
     return int(np.argmax(logits))
+
+
+vocab_strings = np.array([t if t else "" for t in idx_to_token], dtype=object)
+
+
+def mask_logits_vectorized(logits: np.ndarray, current_prefix: str, allowed_choices: list[str], vocab_strings: np.ndarray) -> np.ndarray:
+    """
+    Vectorized validation that tests the entire vocabulary simultaneously.
+    Has near-zero Python loop overhead.
+    """
+    # 1. Pre-filter choices matching the current prefix to minimize string matching work
+    matching_choices = [c for c in allowed_choices if c.startswith(current_prefix)]
+    
+    # 2. Re-create the candidates array by prepending the current prefix to all tokens at once
+    candidates = np.char.add(current_prefix, vocab_strings)
+    
+    # 3. Initialize a boolean array tracking valid slots (Default: False)
+    is_valid = np.zeros(len(logits), dtype=bool)
+    
+    # 4. Use NumPy vector operations to check matches across all tokens instantly
+    for choice in matching_choices:
+        # If a candidate can form the start of this choice string, mark it true
+        is_valid |= np.char.startswith(choice, candidates)
+        
+    # 5. Build and apply the mask vector instantly
+    mask = np.full(len(logits), -np.inf, dtype=np.float32)
+    mask[is_valid] = 0.0
+    
+    return logits + mask
