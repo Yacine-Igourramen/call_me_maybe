@@ -109,7 +109,7 @@ def argmax(logits: np.ndarray) -> int:
     return int(np.argmax(logits))
 
 
-vocab_strings = np.array([t if t else "" for t in idx_to_token], dtype=object)
+#vocab_strings = np.array([t if t else "" for t in idx_to_token], dtype=object)
 
 
 def mask_logits_vectorized(logits: np.ndarray, current_prefix: str, allowed_choices: list[str], vocab_strings: np.ndarray) -> np.ndarray:
@@ -136,3 +136,36 @@ def mask_logits_vectorized(logits: np.ndarray, current_prefix: str, allowed_choi
     mask[is_valid] = 0.0
     
     return logits + mask
+
+def set_linear_layout(layout_str: str, idx_to_token: list) -> dict[int, int]:
+    """
+    Pre-computes the absolute best single token index for every 
+    character cursor offset inside the static layout string.
+    """
+    linear_index_cache: dict[int, int] = {}
+    total_chars = len(layout_str)
+
+    for state in range(total_chars):
+        remaining = layout_str[state:]
+        best_token_idx = -1
+        max_len = 0
+
+        for idx, token_str in enumerate(idx_to_token):
+            if not token_str:
+                continue
+            length = len(token_str)
+            # Keep the longest matching token to prevent tokenizer fragmentation
+            if length > len(remaining) or length <= max_len:
+                continue
+            if remaining.startswith(token_str):
+                max_len = length
+                best_token_idx = idx
+
+        linear_index_cache[state] = best_token_idx
+    return linear_index_cache
+
+def get_static_token_idx(cursor: int, linear_index_cache: dict[int, int]) -> int:
+    """
+    Instantly returns the precompiled token index for a given layout position.
+    """
+    return linear_index_cache.get(cursor, -1)
