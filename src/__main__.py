@@ -2,7 +2,7 @@ from llm_sdk import Small_LLM_Model
 import json
 import numpy as np
 from .parsing import valid
-from .engine_core import Engine, TrieNode, argmax
+from .engine_core import set_linear_layout, get_static_token_idx, mask_logits_vectorized, argmax
 import sys
 from pathlib import Path
 
@@ -87,6 +87,7 @@ def main() -> None:
                 int_dot_mask[idx] = True
     i = 1
     data = []
+    vocab_strings = np.array([t if t else "" for t in idx_to_token], dtype=object)
     for prompt in prompts:
         selection_context = (
             f"User request: {prompt}\n\n"
@@ -97,7 +98,25 @@ def main() -> None:
         prompt = prompt.replace('\\', '\\\\').replace('"', '\\"')
         print(prompt)
         prefix_layout = f'{{\n"prompt": "{prompt}",\n"name": "'
-
+        prefix_tokens = set_linear_layout(prefix_layout, idx_to_token)
+        mode = "prefix"
+        cursor = 0
+        chosen_func = ""
+        while True:
+            if mode == "prefix":
+                if len(output_str) == len(prefix_layout):
+                    mode = "choices"
+                    break
+                selected_token = get_static_token_idx(cursor, prefix_tokens)
+                print(idx_to_token[selected_token])
+                cursor += len(idx_to_token[selected_token])
+            if mode == "choices":
+                logits = model_object.get_logits_from_input_ids(feed)
+                logits = mask_logits_vectorized(logits, chosen_func, allowed_choices, vocab_strings)
+                selected_token = argmax(logits)
+                chosen_func += idx_to_token[selected_token]
+            feed.append(prefix_tokens)
+            output_str += idx_to_token[selected_token]
         try:
             print(f"[{i}/{len(prompts)}]'{prompt}' is done")
             i += 1
