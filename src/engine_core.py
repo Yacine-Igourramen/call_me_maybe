@@ -5,19 +5,42 @@ def argmax(logits: np.ndarray) -> int:
     return int(np.argmax(logits))
 
 
-def mask_logits_vectorized(logits: np.ndarray, current_prefix: str, allowed_choices: list[str], vocab_strings: np.ndarray) -> np.ndarray:
+def mask_logits_vectorized(
+    logits: np.ndarray,
+    current_prefix: str,
+    allowed_choices: list[str],
+    vocab_strings: np.ndarray,
+) -> np.ndarray | None:
     """
     Vectorized validation that tests the entire vocabulary simultaneously.
-    Has near-zero Python loop overhead.
+    Returns None if current_prefix is already a complete valid choice.
     """
-    matching_choices = [c for c in allowed_choices if c.startswith(current_prefix)]
+    if current_prefix in allowed_choices:
+        return None
 
-    candidates = np.char.add(current_prefix, vocab_strings)
+    matching_choices = [
+        c for c in allowed_choices if c.startswith(current_prefix)
+    ]
+    if not matching_choices:
+        return None
+
+    # Identify non-empty token entries to prevent blank tokens from matching
+    non_empty_tokens = vocab_strings != ""
+
+    candidates = np.char.add(current_prefix, vocab_strings).astype(str)
 
     is_valid = np.zeros(len(logits), dtype=bool)
 
     for choice in matching_choices:
+        # Check if candidate string can form the start of an allowed choice
         is_valid |= np.char.startswith(choice, candidates)
+
+    # Ensure tokens with None/empty string in vocabulary are strictly excluded
+    is_valid &= non_empty_tokens
+
+    # If no valid token candidates exist, signal completion/failure safely
+    if not np.any(is_valid):
+        return None
 
     mask = np.full(len(logits), -np.inf, dtype=np.float32)
     mask[is_valid] = 0.0
@@ -26,10 +49,6 @@ def mask_logits_vectorized(logits: np.ndarray, current_prefix: str, allowed_choi
 
 
 def set_linear_layout(layout_str: str, idx_to_token: list) -> dict[int, int]:
-    """
-    Pre-computes the absolute best single token index for every 
-    character cursor offset inside the static layout string.
-    """
     linear_index_cache: dict[int, int] = {}
     total_chars = len(layout_str)
 
@@ -53,7 +72,4 @@ def set_linear_layout(layout_str: str, idx_to_token: list) -> dict[int, int]:
 
 
 def get_static_token_idx(cursor: int, linear_index_cache: dict[int, int]) -> int:
-    """
-    Instantly returns the precompiled token index for a given layout position.
-    """
     return linear_index_cache.get(cursor, -1)

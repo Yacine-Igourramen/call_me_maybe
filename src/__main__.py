@@ -52,9 +52,11 @@ def main() -> None:
     path = model_object.get_path_to_vocab_file()
     with open(path, "r", encoding="utf-8") as f:
         vocab = json.load(f)
+    print(len(vocab))
 
     dummy_logits = model_object.get_logits_from_input_ids([1])
     vocab_size = len(dummy_logits)
+    print(vocab_size)
 
     idx_to_token: list[str | None] = [None] * vocab_size
     idx_to_model_id: list[int] = [0] * vocab_size
@@ -90,8 +92,11 @@ def main() -> None:
     vocab_strings = np.array([t if t else "" for t in idx_to_token], dtype=object)
     for prompt in prompts:
         selection_context = (
-            f"User request: {prompt}\n\n"
-            + "\n".join(descriptions)
+            "Select the function that best matches the request.\n\n"
+            "--- FUNCTIONS ---\n"
+            + "\n".join(descriptions) + "\n\n"
+            f"--- USER REQUEST ---\n\"{prompt}\"\n\n"
+            "Function Name:"
         )
         feed = model_object.encode(selection_context)[0].tolist()
         output_str = ""
@@ -106,16 +111,20 @@ def main() -> None:
             if mode == "prefix":
                 if len(output_str) == len(prefix_layout):
                     mode = "choices"
-                    break
+                    continue
                 selected_token = get_static_token_idx(cursor, prefix_tokens)
-                print(idx_to_token[selected_token])
                 cursor += len(idx_to_token[selected_token])
             if mode == "choices":
                 logits = model_object.get_logits_from_input_ids(feed)
                 logits = mask_logits_vectorized(logits, chosen_func, allowed_choices, vocab_strings)
+                if logits is None:
+                    prefix_layout = '"}'
+                    output_str += prefix_layout
+                    break
                 selected_token = argmax(logits)
                 chosen_func += idx_to_token[selected_token]
-            feed.append(prefix_tokens)
+            print(idx_to_token[selected_token])
+            feed.append(selected_token)
             output_str += idx_to_token[selected_token]
         try:
             print(f"[{i}/{len(prompts)}]'{prompt}' is done")
