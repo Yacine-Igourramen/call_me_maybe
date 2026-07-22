@@ -2,7 +2,7 @@ from llm_sdk import Small_LLM_Model
 import json
 import numpy as np
 from .parsing import valid
-from .engine_core import set_linear_layout, get_static_token_idx, mask_logits_vectorized, argmax
+from .engine_core import set_linear_layout, get_static_token_idx, mask_logits_vectorized, argmax, pre_compile_args
 import sys
 from pathlib import Path
 
@@ -67,7 +67,7 @@ def main() -> None:
             idx_to_token[token_id] = sanitized
             idx_to_model_id[token_id] = int(token_id)
 
-    allowed_choices = [i.name for i in functions]
+    allowed_choices = [i.name+'"}' for i in functions]
     descriptions = []
     for function in functions:
         if function.parameter:
@@ -118,11 +118,13 @@ def main() -> None:
                 logits = model_object.get_logits_from_input_ids(feed)
                 logits = mask_logits_vectorized(logits, chosen_func, allowed_choices, vocab_strings)
                 if logits is None:
-                    prefix_layout = '"}'
-                    output_str += prefix_layout
-                    break
+                    mode = "args"
+                    continue
                 selected_token = argmax(logits)
                 chosen_func += idx_to_token[selected_token]
+            if mode == "args":
+                pre_compile_args(chosen_func, functions)
+                break
             print(idx_to_token[selected_token])
             feed.append(selected_token)
             output_str += idx_to_token[selected_token]

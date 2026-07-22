@@ -73,3 +73,9 @@ def set_linear_layout(layout_str: str, idx_to_token: list) -> dict[int, int]:
 
 def get_static_token_idx(cursor: int, linear_index_cache: dict[int, int]) -> int:
     return linear_index_cache.get(cursor, -1)
+
+
+def pre_compile_args(chosen_func: str, functions):
+    for fun in functions:
+        if fun.name == chosen_func[:len(chosen_func)-2]:
+            print(str(fun.parameter))
