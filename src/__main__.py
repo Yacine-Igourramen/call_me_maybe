@@ -2,9 +2,11 @@ from llm_sdk import Small_LLM_Model
 import json
 import numpy as np
 from .parsing import valid
-from .engine_core import set_linear_layout, get_static_token_idx, mask_logits_vectorized, argmax, pre_compile_args
+from .engine_core import set_linear_layout, get_static_token_idx, mask_logits_vectorized, argmax, pre_compile_args, mask_dynamic_args, correct_args
 import sys
 from pathlib import Path
+
+token_limit = 100
 
 
 def main() -> None:
@@ -67,7 +69,7 @@ def main() -> None:
             idx_to_token[token_id] = sanitized
             idx_to_model_id[token_id] = int(token_id)
 
-    allowed_choices = [i.name+'"}' for i in functions]
+    allowed_choices = [i.name for i in functions]
     descriptions = []
     for function in functions:
         if function.parameter:
@@ -87,7 +89,7 @@ def main() -> None:
                 float_terminator_mask[idx] = True
             if "." in token_str:
                 int_dot_mask[idx] = True
-    i = 1
+    j = 1
     data = []
     vocab_strings = np.array([t if t else "" for t in idx_to_token], dtype=object)
     for prompt in prompts:
@@ -107,30 +109,75 @@ def main() -> None:
         mode = "prefix"
         cursor = 0
         chosen_func = ""
+        the_arg = ""
+        i = 0
+        b = 0
         while True:
             if mode == "prefix":
                 if len(output_str) == len(prefix_layout):
                     mode = "choices"
                     continue
                 selected_token = get_static_token_idx(cursor, prefix_tokens)
-                cursor += len(idx_to_token[selected_token])
-            if mode == "choices":
+            elif mode == "choices":
                 logits = model_object.get_logits_from_input_ids(feed)
-                logits = mask_logits_vectorized(logits, chosen_func, allowed_choices, vocab_strings)
+                logits = mask_logits_vectorized(
+                    logits, chosen_func, allowed_choices, vocab_strings
+                )
                 if logits is None:
                     mode = "args"
+                    args_layout_str, prefix_tokens, param_list = pre_compile_args(chosen_func, functions, idx_to_token)
+                    cursor = 0
                     continue
                 selected_token = argmax(logits)
                 chosen_func += idx_to_token[selected_token]
-            if mode == "args":
-                pre_compile_args(chosen_func, functions)
-                break
+            elif mode == "args":
+                if i == len(prefix_tokens):
+                    break
+                selected_token = get_static_token_idx(cursor, prefix_tokens[i])
+                if cursor >= len(args_layout_str[i]):
+                    i += 1
+                    cursor = 0
+                    if b < len(param_list):
+                        mode = "dynamic_args"
+                        the_arg = ""
+                    continue
+            elif mode == "dynamic_args":
+                logits = model_object.get_logits_from_input_ids(feed)
+                
+                # Pass current parameter type to mask_dynamic_args
+                logits = mask_dynamic_args(logits, param_list[b], idx_to_token, the_arg)
+                selected_token = argmax(logits)
+                token_str = idx_to_token[selected_token]
+                # If selected token is a JSON terminator, do not consume it into output_str.
+                # Hand control back to static "args" mode to print delimiters cleanly.
+                if param_list[b] is str:
+                    done = '"' in token_str and '"' in the_arg
+                else:
+                    done = token_str.startswith((",", "}", "\n"))
+                if cursor > token_limit:
+                    done = True
+                if done:
+                    if param_list[b] is str:
+                        print(idx_to_token[selected_token])
+                        feed.append(idx_to_model_id[selected_token])
+                        output_str += token_str
+                        cursor += len(token_str)
+                    mode = "args"
+                    prefix_tokens[i], args_layout_str[i] = correct_args(output_str, args_layout_str[i], idx_to_token)
+                    the_arg = ""
+                    b += 1
+                    cursor = 0
+                    continue
+                the_arg += token_str
+
             print(idx_to_token[selected_token])
-            feed.append(selected_token)
+            cursor += len(idx_to_token[selected_token])
+            feed.append(idx_to_model_id[selected_token])
             output_str += idx_to_token[selected_token]
         try:
             print(f"[{i}/{len(prompts)}]'{prompt}' is done")
-            i += 1
+            j += 1
+            print(output_str)
             obj = json.loads(output_str)
         except json.JSONDecodeError as e:
             print("Invalid output JSON:", e)
