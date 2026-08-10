@@ -228,9 +228,6 @@ def mask_dynamic_args(
         if expected_type is float:
             if "," in token:
                 continue
-
-            # If current value lacks a decimal/exponent, do not allow JSON separators yet.
-            # Require the model to sample a '.' or decimal token first.
             if token.startswith((",", "}", "\n")):
                 if state == PrefixState.COMPLETE and has_decimal:
                     allowed[idx] = True
@@ -256,87 +253,3 @@ def mask_dynamic_args(
 
     masked[~allowed] = -np.inf
     return masked
-
-
-def bytes_to_unicode():
-    bs = list(range(ord("!"), ord("~")+1)) + list(range(ord("¡"), ord("¬")+1)) + list(range(ord("®"), ord("ÿ")+1))
-    cs = bs[:]
-    n = 0
-    for b in range(2**8):
-        if b not in bs:
-            bs.append(b)
-            cs.append(2**8+n)
-            n += 1
-    cs = [chr(n) for n in cs]
-    return dict(zip(bs, cs))
-
-
-def get_pairs(word):
-    pairs = set()
-    prev_char = word[0]
-    for char in word[1:]:
-        pairs.add((prev_char, char))
-        prev_char = char
-    return pairs
-
-
-def load_bpe_assets(vocab_path: str, merges_path: str):
-    with open(vocab_path, "r", encoding="utf-8") as f:
-        encoder = json.load(f)
-    with open(merges_path, "r", encoding="utf-8") as f:
-        bpe_data = f.read().split('\n')[1:-1]
-    
-    bpe_merges = [tuple(merge.split()) for merge in bpe_data if merge.strip()]
-    bpe_ranks = dict(zip(bpe_merges, range(len(bpe_merges))))
-    byte_encoder = bytes_to_unicode()
-    pat = re.compile(r"""'s|'t|'re|'ve|'m|'ll|'d| ?[a-zA-Z]+| ?[0-9]+| ?[^\sa-zA-Z0-9]+|\s+(?!\S)|\s+""")
-    
-    return encoder, bpe_ranks, byte_encoder, pat
-
-
-def apply_bpe(token: str, bpe_ranks: dict):
-    word = tuple(token)
-    pairs = get_pairs(word)
-    if not pairs:
-        return token
-    
-    while True:
-        bigram = min(pairs, key=lambda pair: bpe_ranks.get(pair, float('inf')))
-        if bigram not in bpe_ranks:
-            break
-        
-        first, second = bigram
-        new_word = []
-        i = 0
-        while i < len(word):
-            try:
-                j = word.index(first, i)
-                new_word.extend(word[i:j])
-                i = j
-            except ValueError:
-                new_word.extend(word[i:])
-                break
-            
-            if word[i] == first and i < len(word)-1 and word[i+1] == second:
-                new_word.append(first+second)
-                i += 2
-            else:
-                new_word.append(word[i])
-                i += 1
-                
-        word = tuple(new_word)
-        if len(word) == 1:
-            break
-        pairs = get_pairs(word)
-        
-    return " ".join(word)
-
-
-def encode_text(text: str, encoder: dict, bpe_ranks: dict, byte_encoder: dict, pat: re.Pattern) -> list[list[int]]:
-    bpe_tokens = []
-    for token in re.findall(pat, text):
-        token = "".join(byte_encoder[b] for b in token.encode('utf-8'))
-        for bpe_token in apply_bpe(token, bpe_ranks).split(" "):
-            if bpe_token in encoder:
-                bpe_tokens.append(encoder[bpe_token])
-    return [bpe_tokens]

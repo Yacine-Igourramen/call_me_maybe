@@ -2,7 +2,7 @@ from llm_sdk import Small_LLM_Model
 import json
 import numpy as np
 from .parsing import valid
-from .engine_core import set_linear_layout, get_static_token_idx, mask_logits_vectorized, argmax, pre_compile_args, mask_dynamic_args, encode
+from .engine_core import set_linear_layout, get_static_token_idx, mask_logits_vectorized, argmax, pre_compile_args, mask_dynamic_args
 import sys
 from pathlib import Path
 
@@ -100,7 +100,7 @@ def main() -> None:
             f"--- USER REQUEST ---\n\"{prompt}\"\n\n"
             "Function Name:"
         )
-        feed = encode(selection_context)
+        feed = model_object.encode(selection_context)[0].tolist()
         output_str = ""
         prompt = prompt.replace('\\', '\\\\').replace('"', '\\"')
         print(prompt)
@@ -152,10 +152,8 @@ def main() -> None:
                     end = ['"']
                 for char in end:
                     if char in token_str and '\\"' not in token_str:
-
-                        print(f"end character is {token_str}")
                         token_str = token_str[:token_str.find(char)]
-                        selected = encode(token_str)
+                        selected = model_object.encode(token_str)[0].tolist()
                         for token in selected:
                             print(idx_to_token[token])
                             feed.append(idx_to_model_id[token])
