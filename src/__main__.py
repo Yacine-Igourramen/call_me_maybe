@@ -2,11 +2,11 @@ from llm_sdk import Small_LLM_Model
 import json
 import numpy as np
 from .parsing import valid
-from .engine_core import set_linear_layout, get_static_token_idx, mask_logits_vectorized, argmax, pre_compile_args, mask_dynamic_args, correct_args
+from .engine_core import set_linear_layout, get_static_token_idx, mask_logits_vectorized, argmax, pre_compile_args, mask_dynamic_args, encode
 import sys
 from pathlib import Path
 
-token_limit = 100
+token_limit = 50
 
 
 def main() -> None:
@@ -100,7 +100,7 @@ def main() -> None:
             f"--- USER REQUEST ---\n\"{prompt}\"\n\n"
             "Function Name:"
         )
-        feed = model_object.encode(selection_context)[0].tolist()
+        feed = encode(selection_context)
         output_str = ""
         prompt = prompt.replace('\\', '\\\\').replace('"', '\\"')
         print(prompt)
@@ -112,6 +112,7 @@ def main() -> None:
         the_arg = ""
         i = 0
         b = 0
+        done = False
         while True:
             if mode == "prefix":
                 if len(output_str) == len(prefix_layout):
@@ -143,27 +144,26 @@ def main() -> None:
                     continue
             elif mode == "dynamic_args":
                 logits = model_object.get_logits_from_input_ids(feed)
-                
-                # Pass current parameter type to mask_dynamic_args
                 logits = mask_dynamic_args(logits, param_list[b], idx_to_token, the_arg)
                 selected_token = argmax(logits)
                 token_str = idx_to_token[selected_token]
-                # If selected token is a JSON terminator, do not consume it into output_str.
-                # Hand control back to static "args" mode to print delimiters cleanly.
-                if param_list[b] is str:
-                    done = '"' in token_str and '"' in the_arg
-                else:
-                    done = token_str.startswith((",", "}", "\n"))
-                if cursor > token_limit:
-                    done = True
+                end = ['}', ',', '\n']
+                if param_list[b] == str:
+                    end = ['"']
+                for char in end:
+                    if char in token_str and '\\"' not in token_str:
+
+                        print(f"end character is {token_str}")
+                        token_str = token_str[:token_str.find(char)]
+                        selected = encode(token_str)
+                        for token in selected:
+                            print(idx_to_token[token])
+                            feed.append(idx_to_model_id[token])
+                            output_str += idx_to_token[token]
+                        done = True
                 if done:
-                    if param_list[b] is str:
-                        print(idx_to_token[selected_token])
-                        feed.append(idx_to_model_id[selected_token])
-                        output_str += token_str
-                        cursor += len(token_str)
                     mode = "args"
-                    prefix_tokens[i], args_layout_str[i] = correct_args(output_str, args_layout_str[i], idx_to_token)
+                    done = False
                     the_arg = ""
                     b += 1
                     cursor = 0
@@ -175,7 +175,7 @@ def main() -> None:
             feed.append(idx_to_model_id[selected_token])
             output_str += idx_to_token[selected_token]
         try:
-            print(f"[{i}/{len(prompts)}]'{prompt}' is done")
+            print(f"[{j}/{len(prompts)}]'{prompt}' is done")
             j += 1
             print(output_str)
             obj = json.loads(output_str)
