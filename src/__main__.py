@@ -1,8 +1,14 @@
 from llm_sdk import Small_LLM_Model
 import json
-import numpy as np
 from .parsing import valid
-from .engine_core import set_linear_layout, get_static_token_idx, mask_logits_vectorized, argmax, pre_compile_args, mask_dynamic_args
+from .engine_core import (
+    set_linear_layout,
+    get_static_token_idx,
+    mask_logits_vectorized,
+    argmax,
+    pre_compile_args,
+    mask_dynamic_args,
+)
 import sys
 from pathlib import Path
 
@@ -54,20 +60,15 @@ def main() -> None:
     path = model_object.get_path_to_vocab_file()
     with open(path, "r", encoding="utf-8") as f:
         vocab = json.load(f)
-    print(len(vocab))
 
     dummy_logits = model_object.get_logits_from_input_ids([1])
     vocab_size = len(dummy_logits)
-    print(vocab_size)
 
-    idx_to_token: list[str | None] = [None] * vocab_size
-    idx_to_model_id: list[int] = [0] * vocab_size
+    idx_to_token = [None] * vocab_size
 
     for token_str, token_id in vocab.items():
-        if token_id < vocab_size:
-            sanitized = token_str.replace("Ċ", "\n").replace("Ġ", " ")
-            idx_to_token[token_id] = sanitized
-            idx_to_model_id[token_id] = int(token_id)
+        sanitized = token_str.replace("Ċ", "\n").replace("Ġ", " ")
+        idx_to_token[token_id] = sanitized
 
     allowed_choices = [i.name for i in functions]
     descriptions = []
@@ -80,18 +81,9 @@ def main() -> None:
             f"function: {function.name} purpose: {function.description} "
             f"args: {parameter_names}"
         )
-    float_terminator_mask = np.zeros(vocab_size, dtype=bool)
-    int_dot_mask = np.zeros(vocab_size, dtype=bool)
-
-    for idx, token_str in enumerate(idx_to_token):
-        if token_str:
-            if "," in token_str or "\n" in token_str or "}" in token_str:
-                float_terminator_mask[idx] = True
-            if "." in token_str:
-                int_dot_mask[idx] = True
     j = 1
     data = []
-    vocab_strings = np.array([t if t else "" for t in idx_to_token], dtype=object)
+
     for prompt in prompts:
         selection_context = (
             "Select the function that best matches the request.\n\n"
@@ -122,11 +114,13 @@ def main() -> None:
             elif mode == "choices":
                 logits = model_object.get_logits_from_input_ids(feed)
                 logits = mask_logits_vectorized(
-                    logits, chosen_func, allowed_choices, vocab_strings
+                    logits, chosen_func, allowed_choices, idx_to_token
                 )
                 if logits is None:
                     mode = "args"
-                    args_layout_str, prefix_tokens, param_list = pre_compile_args(chosen_func, functions, idx_to_token)
+                    args_layout_str, prefix_tokens, param_list = (
+                        pre_compile_args(chosen_func, functions, idx_to_token)
+                    )
                     cursor = 0
                     continue
                 selected_token = argmax(logits)
@@ -144,7 +138,12 @@ def main() -> None:
                     continue
             elif mode == "dynamic_args":
                 logits = model_object.get_logits_from_input_ids(feed)
-                logits = mask_dynamic_args(logits, param_list[b], idx_to_token, the_arg)
+                logits = mask_dynamic_args(
+                    logits,
+                    param_list[b],
+                    idx_to_token,
+                    the_arg,
+                )
                 selected_token = argmax(logits)
                 token_str = idx_to_token[selected_token]
                 end = ['}', ',', '\n']
@@ -156,7 +155,7 @@ def main() -> None:
                         selected = model_object.encode(token_str)[0].tolist()
                         for token in selected:
                             print(idx_to_token[token])
-                            feed.append(idx_to_model_id[token])
+                            feed.append(token)
                             output_str += idx_to_token[token]
                         done = True
                 if done:
@@ -170,7 +169,7 @@ def main() -> None:
 
             print(idx_to_token[selected_token])
             cursor += len(idx_to_token[selected_token])
-            feed.append(idx_to_model_id[selected_token])
+            feed.append(selected_token)
             output_str += idx_to_token[selected_token]
         try:
             print(f"[{j}/{len(prompts)}]'{prompt}' is done")

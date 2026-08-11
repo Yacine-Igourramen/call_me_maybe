@@ -12,12 +12,8 @@ def mask_logits_vectorized(
     logits: np.ndarray,
     current_prefix: str,
     allowed_choices: list[str],
-    vocab_strings: np.ndarray,
+    idx_to_token: np.ndarray,
 ) -> np.ndarray | None:
-    """Vectorized validation that tests the entire vocabulary simultaneously.
-
-    Returns None if current_prefix is already a complete valid choice.
-    """
     if current_prefix in allowed_choices:
         return None
 
@@ -27,28 +23,18 @@ def mask_logits_vectorized(
     if not matching_choices:
         return None
 
-    # Identify non-empty token entries to prevent blank tokens from matching
-    non_empty_tokens = vocab_strings != ""
-
-    candidates = np.char.add(current_prefix, vocab_strings).astype(str)
+    vocab_strings = np.array(idx_to_token, dtype=str)
 
     is_valid = np.zeros(len(logits), dtype=bool)
+    prefix_len = len(current_prefix)
 
     for choice in matching_choices:
-        # Check if candidate string can form the start of an allowed choice
-        is_valid |= np.char.startswith(choice, candidates)
-
-    # Ensure tokens with None/empty string in vocabulary are strictly excluded
-    is_valid &= non_empty_tokens
-
-    # If no valid token candidates exist, signal completion/failure safely
+        remainder = choice[prefix_len:]
+        is_valid |= np.char.startswith(remainder, vocab_strings)
+    is_valid &= (vocab_strings != "")
     if not np.any(is_valid):
         return None
-
-    mask = np.full(len(logits), -np.inf, dtype=np.float32)
-    mask[is_valid] = 0.0
-
-    return logits + mask
+    return np.where(is_valid, logits, -np.inf)
 
 
 def set_linear_layout(layout_str: str, idx_to_token: list) -> dict[int, int]:
@@ -83,17 +69,12 @@ def get_static_token_idx(
 def pre_compile_args(
     chosen_func: str, functions: list, idx_to_token: list
 ) -> tuple[list[str], list[dict[int, int]], list[type]]:
-    """Finds the target function schema, converts its Python parameter types
-
-    back into JSON type strings, and pre-compiles the static layout cache.
-    """
     target_function = None
     for fun in functions:
         if fun.name == chosen_func:
             target_function = fun
             break
 
-    # Reverse mapping from Python type objects to JSON type strings
     reverse_type_map = {
         str: "string",
         float: "number",
@@ -101,7 +82,6 @@ def pre_compile_args(
         bool: "boolean",
     }
 
-    # Handle functions with no parameters
     if not target_function or not target_function.parameter:
         layout_str = '",\n"parameters": {}\n}'
         return [layout_str], [set_linear_layout(layout_str, idx_to_token)], []
@@ -113,7 +93,6 @@ def pre_compile_args(
         formatted_schema[param_name] = type_str
         param_list.append(param_type)
 
-    # Serialize to JSON fragment string
     params_json = json.dumps(formatted_schema, indent=2)
     layout_str = f'",\n"parameters": {params_json}\n}}'
     layout_str_chunks = re.split(
@@ -133,13 +112,15 @@ class PrefixState(Enum):
     COMPLETE = 2
 
 
-# Pre-compiled RFC 8259 JSON grammar patterns for maximum loop performance
 _INT_COMPLETE_RE = re.compile(r"-?(0|[1-9]\d*)")
 
 _FLOAT_COMPLETE_RE = re.compile(
     r"-?(0|[1-9]\d*)(\.\d+([eE][+-]?\d+)?|[eE][+-]?\d+)"
 )
-_FLOAT_PREFIX_RE = re.compile(r"-?|-?(0|[1-9]\d*)(\.|(\.\d+)?[eE][+-]?)?")
+
+_FLOAT_PREFIX_RE = re.compile(
+    r"-?|-?(0|[1-9]\d*)(\.\d*)?"
+)
 
 
 def _is_valid_prefix(prefix: str, expected_type: type) -> PrefixState:
@@ -166,15 +147,8 @@ def _is_valid_prefix(prefix: str, expected_type: type) -> PrefixState:
 
     # ---------------- FLOAT ----------------
     if expected_type is float:
-        # 1. Complete float: must contain a decimal (.0, .123) OR exponent (e10, .0e10)
         if _FLOAT_COMPLETE_RE.fullmatch(prefix):
             return PrefixState.COMPLETE
-
-        # 2. Incomplete float prefix:
-        #    - empty "" or "-"
-        #    - whole numbers waiting for a decimal: "16", "-0"
-        #    - dangling decimal point: "16."
-        #    - dangling scientific notation: "16e", "16.5e-"
         if _FLOAT_PREFIX_RE.fullmatch(prefix):
             return PrefixState.PREFIX
 
@@ -189,7 +163,6 @@ def mask_dynamic_args(
     idx_to_token: list[str | None],
     current_value: str,
 ) -> np.ndarray | None:
-    """Masks logits for a dynamic JSON value in pure token-by-token mode."""
     logits = np.array(logits, dtype=np.float32)
     masked = logits.astype(np.float32, copy=True)
 
@@ -220,7 +193,10 @@ def mask_dynamic_args(
                 continue
 
             candidate = current_value + token
-            if _is_valid_prefix(candidate, expected_type) != PrefixState.INVALID:
+            if (
+                _is_valid_prefix(candidate, expected_type)
+                != PrefixState.INVALID
+            ):
                 allowed[idx] = True
             continue
 
@@ -234,7 +210,10 @@ def mask_dynamic_args(
                 continue
 
             candidate = current_value + token
-            if _is_valid_prefix(candidate, expected_type) != PrefixState.INVALID:
+            if (
+                _is_valid_prefix(candidate, expected_type)
+                != PrefixState.INVALID
+            ):
                 allowed[idx] = True
             continue
 
@@ -245,7 +224,10 @@ def mask_dynamic_args(
             continue
 
         candidate = current_value + token
-        if _is_valid_prefix(candidate, expected_type) != PrefixState.INVALID:
+        if (
+            _is_valid_prefix(candidate, expected_type)
+            != PrefixState.INVALID
+        ):
             allowed[idx] = True
 
     if not np.any(allowed):
