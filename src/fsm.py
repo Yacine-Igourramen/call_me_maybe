@@ -95,12 +95,15 @@ class ArgumentFSM(BaseModel):
 
         tmp = self.prefix_tree.setdefault(entry_s, {})
         tmp['"'] = entry_s + 1
-        self.state += 1
+        tmp2 = self.prefix_tree.setdefault(entry_s + 1, {})
+        tmp2[None] = entry_s + 1
+        tmp2['"'] = entry_s + 3
+        tmp2['\\'] = entry_s + 2
 
-        tmp2 = self.prefix_tree.setdefault(self.state, {})
-        tmp2[None] = self.state
-        self.prefix_tree[self.state]['"'] = self.state + 1
-        self.state += 1
+        tmp3 = self.prefix_tree.setdefault(entry_s + 2, {})
+        tmp3[None] = entry_s + 1
+
+        self.state += 3
 
         return [self.state]
 

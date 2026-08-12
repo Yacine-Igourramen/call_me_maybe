@@ -136,7 +136,7 @@ def main() -> None:
                                 "type": reverse_type_map.get(ptype, "string")}
 
                     # build vocab pins and all_vocab from raw vocab mapping
-                    vocab_pins = {}
+                    vocab_pins: dict[str, dict[str, int]] = {}
                     all_vocab = vocab.copy()
                     for tstr, tid in vocab.items():
                         if not tstr:
