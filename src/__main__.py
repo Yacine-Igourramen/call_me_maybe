@@ -6,9 +6,8 @@ from .engine_core import (
     get_static_token_idx,
     mask_logits_vectorized,
     argmax,
-    pre_compile_args,
-    mask_dynamic_args,
 )
+from .fsm import ArgumentFSM
 import sys
 from pathlib import Path
 
@@ -65,10 +64,12 @@ def main() -> None:
     vocab_size = len(dummy_logits)
 
     idx_to_token = [None] * vocab_size
+    id_to_raw_token = [None] * vocab_size
 
     for token_str, token_id in vocab.items():
         sanitized = token_str.replace("Ċ", "\n").replace("Ġ", " ")
         idx_to_token[token_id] = sanitized
+        id_to_raw_token[token_id] = token_str
 
     allowed_choices = [i.name for i in functions]
     descriptions = []
@@ -83,7 +84,6 @@ def main() -> None:
         )
     j = 1
     data = []
-
     for prompt in prompts:
         selection_context = (
             "Select the function that best matches the request.\n\n"
@@ -101,10 +101,6 @@ def main() -> None:
         mode = "prefix"
         cursor = 0
         chosen_func = ""
-        the_arg = ""
-        i = 0
-        b = 0
-        done = False
         while True:
             if mode == "prefix":
                 if len(output_str) == len(prefix_layout):
@@ -117,55 +113,62 @@ def main() -> None:
                     logits, chosen_func, allowed_choices, idx_to_token
                 )
                 if logits is None:
+                    # transition to args-generation mode and build FSM
                     mode = "args"
-                    args_layout_str, prefix_tokens, param_list = (
-                        pre_compile_args(chosen_func, functions, idx_to_token)
+                    # determine the selected function object
+                    target_function = None
+                    for fun in functions:
+                        if fun.name == chosen_func:
+                            target_function = fun
+                            break
+
+                    # prepare formatted parameter schema for FSM
+                    reverse_type_map = {
+                        str: "string",
+                        float: "number",
+                        int: "integer",
+                        bool: "boolean",
+                    }
+                    formatted_schema = {}
+                    if target_function and target_function.parameter:
+                        for pname, ptype in target_function.parameter.items():
+                            formatted_schema[pname] = {
+                                "type": reverse_type_map.get(ptype, "string")}
+
+                    # build vocab pins and all_vocab from raw vocab mapping
+                    vocab_pins = {}
+                    all_vocab = vocab.copy()
+                    for tstr, tid in vocab.items():
+                        if not tstr:
+                            continue
+                        key = tstr[0]
+                        vocab_pins.setdefault(key, {})[tstr] = tid
+                    start_string = '", "parameters": {'
+                    output_str += start_string
+                    feed.extend(model_object.encode(start_string)[0].tolist())
+                    fsm = ArgumentFSM(
+                        parameters=formatted_schema,
+                        vocab_pins=vocab_pins,
+                        all_vocab=all_vocab,
+                        start_string=start_string
                     )
-                    cursor = 0
+                    fsm.current_state = len(fsm.tr_token(fsm.start_string))
                     continue
                 selected_token = argmax(logits)
                 chosen_func += idx_to_token[selected_token]
             elif mode == "args":
-                if i == len(prefix_tokens):
-                    break
-                selected_token = get_static_token_idx(cursor, prefix_tokens[i])
-                if cursor >= len(args_layout_str[i]):
-                    i += 1
-                    cursor = 0
-                    if b < len(param_list):
-                        mode = "dynamic_args"
-                        the_arg = ""
-                    continue
-            elif mode == "dynamic_args":
                 logits = model_object.get_logits_from_input_ids(feed)
-                logits = mask_dynamic_args(
-                    logits,
-                    param_list[b],
-                    idx_to_token,
-                    the_arg,
-                )
+                # get allowed token ids from FSM and mask logits accordingly
+                allowed_tokens = fsm.allowed_token(fsm.current_state)
+                if not allowed_tokens:
+
+                    break
+                logits = fsm.mask_logits(logits, allowed_tokens)
                 selected_token = argmax(logits)
-                token_str = idx_to_token[selected_token]
-                end = ['}', ',', '\n']
-                if param_list[b] == str:
-                    end = ['"']
-                for char in end:
-                    if char in token_str and '\\"' not in token_str:
-                        token_str = token_str[:token_str.find(char)]
-                        selected = model_object.encode(token_str)[0].tolist()
-                        for token in selected:
-                            print(idx_to_token[token])
-                            feed.append(token)
-                            output_str += idx_to_token[token]
-                        done = True
-                if done:
-                    mode = "args"
-                    done = False
-                    the_arg = ""
-                    b += 1
-                    cursor = 0
-                    continue
-                the_arg += token_str
+                # advance FSM with the chosen token string in raw vocab form
+                raw_token = id_to_raw_token[selected_token]
+                # debug: show transition input and state change
+                fsm.transition(raw_token)
 
             print(idx_to_token[selected_token])
             cursor += len(idx_to_token[selected_token])

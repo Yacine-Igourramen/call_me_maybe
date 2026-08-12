@@ -1,6 +1,3 @@
-import json
-import re
-from enum import Enum
 import numpy as np
 
 
@@ -64,43 +61,3 @@ def get_static_token_idx(
     cursor: int, linear_index_cache: dict[int, int]
 ) -> int:
     return linear_index_cache.get(cursor, -1)
-
-
-def pre_compile_args(
-    chosen_func: str, functions: list, idx_to_token: list
-) -> tuple[list[str], list[dict[int, int]], list[type]]:
-    target_function = None
-    for fun in functions:
-        if fun.name == chosen_func:
-            target_function = fun
-            break
-
-    reverse_type_map = {
-        str: "string",
-        float: "number",
-        int: "integer",
-        bool: "boolean",
-    }
-
-    if not target_function or not target_function.parameter:
-        layout_str = '",\n"parameters": {}\n}'
-        return [layout_str], [set_linear_layout(layout_str, idx_to_token)], []
-
-    param_list = []
-    formatted_schema = {}
-    for param_name, param_type in target_function.parameter.items():
-        type_str = reverse_type_map.get(param_type, "string")
-        formatted_schema[param_name] = type_str
-        param_list.append(param_type)
-
-    params_json = json.dumps(formatted_schema, indent=2)
-    layout_str = f'",\n"parameters": {params_json}\n}}'
-    layout_str_chunks = re.split(
-        r'"string"|"number"|"integer"|"boolean"', layout_str
-    )
-
-    linear_cache = [
-        set_linear_layout(chunk, idx_to_token) for chunk in layout_str_chunks
-    ]
-    print(layout_str_chunks)
-    return layout_str_chunks, linear_cache, param_list

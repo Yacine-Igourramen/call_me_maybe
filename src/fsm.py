@@ -6,7 +6,10 @@ class ArgumentFSM(BaseModel):
     """
     Finite-state machine for constrained JSON parameter generation.
     """
-    model_config = ConfigDict(arbitrary_types_allowed=True, validate_assignment=False)
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True,
+        validate_assignment=False,
+    )
 
     parameters: dict[str, Any]
     vocab_pins: dict[str, dict[str, int]]
@@ -16,14 +19,19 @@ class ArgumentFSM(BaseModel):
     state: int = Field(default=0)
     current_state: int = Field(default=0)
 
-    prefix_tree: dict[int, dict[Optional[str], int]] = Field(default_factory=dict)
-    cache: dict[int, list[int]] = Field(default_factory=dict)
+    prefix_tree: dict[int, dict[Optional[str], int]] = Field(
+        default_factory=dict
+    )
+    cache: dict[int, list[int]] = Field(
+        default_factory=dict
+    )
 
     def model_post_init(self, __context: Any) -> None:
         self.build_state()
 
     def tr_token(self, string: str) -> str:
-        return string.replace(" ", "Ġ")
+        # map spaces and newlines to the model's special token markers
+        return string.replace(" ", "Ġ").replace("\n", "Ċ")
 
     def build_state(self) -> None:
         start = self.tr_token(self.start_string)
@@ -33,8 +41,10 @@ class ArgumentFSM(BaseModel):
 
         num_params = len(self.parameters)
         if num_params == 0:
-            self.prefix_tree.setdefault(self.state, {})["}"] = self.state + 1
-            self.prefix_tree.setdefault(self.state + 1, {})["}"] = self.state + 2
+            tmp = self.prefix_tree.setdefault(self.state, {})
+            tmp["}"] = self.state + 1
+            tmp2 = self.prefix_tree.setdefault(self.state + 1, {})
+            tmp2["}"] = self.state + 2
             self.state += 2
             return
 
@@ -42,7 +52,8 @@ class ArgumentFSM(BaseModel):
             prefix = f' "{key}": ' if index > 1 else f'"{key}": '
 
             for c in self.tr_token(prefix):
-                self.prefix_tree.setdefault(self.state, {})[c] = self.state + 1
+                tmp = self.prefix_tree.setdefault(self.state, {})
+                tmp[c] = self.state + 1
                 self.state += 1
 
             exit_states = self.build_type_state(param_obj)
@@ -51,10 +62,12 @@ class ArgumentFSM(BaseModel):
             if is_last_param:
                 brace_1 = self.state + 1
                 for exit_s in exit_states:
-                    self.prefix_tree.setdefault(exit_s, {})["}"] = brace_1
+                    tmp = self.prefix_tree.setdefault(exit_s, {})
+                    tmp["}"] = brace_1
 
                 brace_2 = brace_1 + 1
-                self.prefix_tree.setdefault(brace_1, {})["}"] = brace_2
+                tmpb = self.prefix_tree.setdefault(brace_1, {})
+                tmpb["}"] = brace_2
                 self.state = brace_2
             else:
                 next_s = self.state + 1
@@ -80,10 +93,12 @@ class ArgumentFSM(BaseModel):
     def build_string_state(self) -> list[int]:
         entry_s = self.state
 
-        self.prefix_tree.setdefault(entry_s, {})['"'] = entry_s + 1
+        tmp = self.prefix_tree.setdefault(entry_s, {})
+        tmp['"'] = entry_s + 1
         self.state += 1
 
-        self.prefix_tree.setdefault(self.state, {})[None] = self.state
+        tmp2 = self.prefix_tree.setdefault(self.state, {})
+        tmp2[None] = self.state
         self.prefix_tree[self.state]['"'] = self.state + 1
         self.state += 1
 
@@ -94,29 +109,38 @@ class ArgumentFSM(BaseModel):
         f_nums = "-0123456789"
         for c in f_nums:
             if c == "-":
-                self.prefix_tree.setdefault(base_s, {})[c] = base_s + 1
+                tmp = self.prefix_tree.setdefault(base_s, {})
+                tmp[c] = base_s + 1
             elif c == "0":
-                self.prefix_tree.setdefault(base_s, {})[c] = base_s + 2
+                tmp = self.prefix_tree.setdefault(base_s, {})
+                tmp[c] = base_s + 2
             else:
-                self.prefix_tree.setdefault(base_s, {})[c] = base_s + 3
+                tmp = self.prefix_tree.setdefault(base_s, {})
+                tmp[c] = base_s + 3
 
         for c in "0123456789":
+            tmp = self.prefix_tree.setdefault(base_s + 1, {})
             if c == "0":
-                self.prefix_tree.setdefault(base_s + 1, {})[c] = base_s + 2
+                tmp[c] = base_s + 2
             else:
-                self.prefix_tree.setdefault(base_s + 1, {})[c] = base_s + 3
+                tmp[c] = base_s + 3
 
-        self.prefix_tree.setdefault(base_s + 2, {})["."] = base_s + 4
-        self.prefix_tree.setdefault(base_s + 3, {})["."] = base_s + 4
-
-        for c in "0123456789":
-            self.prefix_tree.setdefault(base_s + 3, {})[c] = base_s + 3
-
-        for c in "0123456789":
-            self.prefix_tree.setdefault(base_s + 4, {})[c] = base_s + 5
+        tmp = self.prefix_tree.setdefault(base_s + 2, {})
+        tmp["."] = base_s + 4
+        tmp2 = self.prefix_tree.setdefault(base_s + 3, {})
+        tmp2["."] = base_s + 4
 
         for c in "0123456789":
-            self.prefix_tree.setdefault(base_s + 5, {})[c] = base_s + 5
+            tmp = self.prefix_tree.setdefault(base_s + 3, {})
+            tmp[c] = base_s + 3
+
+        for c in "0123456789":
+            tmp = self.prefix_tree.setdefault(base_s + 4, {})
+            tmp[c] = base_s + 5
+
+        for c in "0123456789":
+            tmp = self.prefix_tree.setdefault(base_s + 5, {})
+            tmp[c] = base_s + 5
 
         self.state += 5
         return [base_s + 5]
@@ -126,20 +150,25 @@ class ArgumentFSM(BaseModel):
         f_nums = "-0123456789"
         for c in f_nums:
             if c == "-":
-                self.prefix_tree.setdefault(base_s, {})[c] = base_s + 1
+                tmp = self.prefix_tree.setdefault(base_s, {})
+                tmp[c] = base_s + 1
             elif c == "0":
-                self.prefix_tree.setdefault(base_s, {})[c] = base_s + 2
+                tmp = self.prefix_tree.setdefault(base_s, {})
+                tmp[c] = base_s + 2
             else:
-                self.prefix_tree.setdefault(base_s, {})[c] = base_s + 3
+                tmp = self.prefix_tree.setdefault(base_s, {})
+                tmp[c] = base_s + 3
 
         for c in "0123456789":
+            tmp = self.prefix_tree.setdefault(base_s + 1, {})
             if c == "0":
-                self.prefix_tree.setdefault(base_s + 1, {})[c] = base_s + 2
+                tmp[c] = base_s + 2
             else:
-                self.prefix_tree.setdefault(base_s + 1, {})[c] = base_s + 3
+                tmp[c] = base_s + 3
 
         for c in "0123456789":
-            self.prefix_tree.setdefault(base_s + 3, {})[c] = base_s + 3
+            tmp = self.prefix_tree.setdefault(base_s + 3, {})
+            tmp[c] = base_s + 3
 
         self.state += 3
         return [base_s + 2, base_s + 3]
@@ -185,7 +214,8 @@ class ArgumentFSM(BaseModel):
         self.cache[state] = allowed_tokens
         return allowed_tokens
 
-    def mask_logits(self, logits: Any, allowed_tokens: list[int]) -> list[float]:
+    def mask_logits(
+            self, logits: Any, allowed_tokens: list[int]) -> list[float]:
         masked: list[float] = [float("-inf")] * len(logits)
         for token_id in allowed_tokens:
             if token_id < len(logits):
@@ -194,7 +224,9 @@ class ArgumentFSM(BaseModel):
 
     def transition(self, token_str: str) -> None:
         for c in self.tr_token(token_str):
-            if self.current_state == -1 or self.current_state not in self.prefix_tree:
+            if self.current_state == -1:
+                break
+            if self.current_state not in self.prefix_tree:
                 break
 
             edges = self.prefix_tree[self.current_state]
@@ -204,5 +236,7 @@ class ArgumentFSM(BaseModel):
             elif None in edges:
                 self.current_state = edges[None]
             else:
+                if c in ("Ġ", "Ċ"):
+                    continue
                 self.current_state = -1
                 break
