@@ -56,7 +56,7 @@ class FSM(BaseModel):
             self.prefix_tree.setdefault(self.state, {})[c] = self.state + 1
             self.state += 1
 
-    def build_func_state(self):
+    def build_func_state(self) -> None:
         self.state = 0
         self.current_state = 0
         self.prefix_tree.clear()
@@ -67,7 +67,7 @@ class FSM(BaseModel):
                 self.prefix_tree.setdefault(t_state, {})[c] = t_state + 1
                 t_state += 1
 
-    def build_arg_state(self, parameters) -> None:
+    def build_arg_state(self, parameters: dict) -> None:
         num_params = len(parameters)
         self.state = 0
         self.current_state = 0
@@ -261,15 +261,15 @@ class FSM(BaseModel):
         return allowed_tokens
 
     def mask_logits(
-            self, allowed_tokens: list[int]) -> list[float]:
+            self, allowed_tokens: list[int]) -> tuple[int, str]:
         logits = self.model_object.get_logits_from_input_ids(self.feed)
         masked: list[float] = [-np.inf] * len(logits)
         for token_id in allowed_tokens:
             if token_id < len(logits):
                 masked[token_id] = logits[token_id]
-        chosen: int = np.argmax(masked)
+        chosen: int = int(np.argmax(masked))
         self.feed.append(chosen)
-        return chosen, self.model_object.decode(chosen)
+        return chosen, self.model_object.decode([chosen])
 
     def transition(self, token_str: str) -> None:
         for c in self.tr_token(token_str):

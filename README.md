@@ -4,11 +4,15 @@
 
 ## Description
 
-This project implements constrained decoding for a local language model. Its goal is to make the model generate valid JSON function calls instead of unrestricted text.
+This project implements constrained decoding for a local language model. Its goal is to generate valid JSON function calls instead of unrestricted text.
 
-The program receives a list of function definitions and user prompts. For each prompt, it selects one allowed function and generates its arguments in a JSON object.
+The program reads a list of function definitions and a list of prompts. For each prompt, it selects one valid function and produces a JSON object containing:
 
-The expected output format is:
+- the original user prompt,
+- the chosen function name,
+- the function parameters as a JSON object.
+
+The output format is:
 
 ```json
 {
@@ -18,54 +22,56 @@ The expected output format is:
 }
 ```
 
-The project uses a local Hugging Face causal language model through a small wrapper named `llm_sdk`.
-
-## Algorithm Explanation
-
-The project uses constrained decoding rather than allowing the language model to choose every output token freely.
-
-The generated JSON is split into several decoding modes:
-
-1. **Prefix mode**
-   The JSON structure before the function name is forced token by token. This includes the original `"prompt":` and the `"name":` key.
-
-2. **vectorized prefix matching mode**
-   Function names are inserted into a vectorized prefix matching function. During this mode, only tokens that can continue at least one valid function name are allowed. This prevents the model from generating a function name that does not exist in the provided definitions.
-
-3. **Static argument mode**
-   JSON syntax, argument keys, commas, quotes, and brackets are forced. This ensures the structure remains valid.
-
-4. **Dynamic argument mode**
-   The model is allowed to generate the value of the current argument then its type is checked to validate it. When a closing quote is produced, decoding switches back to static mode for the next argument or closes the JSON object.
-
-At every constrained step, invalid vocabulary tokens receive a logit mask of negative infinity. The model then selects the highest-scoring remaining token.
-
-## Design Decisions
-
-### vectorized prefix matching for function names
-
-A vectorized prefix matching was used to constrain function names because multiple allowed names can share prefixes. It makes it possible to validate each generated token incrementally without waiting for the entire name.
-
-### Token-level masking
-
-The model generates tokens rather than individual characters. The engine therefore checks whether each vocabulary token can match the remaining static JSON layout or continue through the vectorized prefix matching.
-
-### Separate static and dynamic decoding
-
-JSON punctuation and field names are deterministic, while argument values depend on the prompt. Separating them reduces invalid output while still allowing the model to infer parameter values.
-
-### JSON validation
-
-Each generated result is passed through `json.loads()`. If parsing fails, the program reports invalid output instead of writing malformed JSON to the result file.
+This project relies on a local Hugging Face causal language model accessed through a lightweight wrapper named `llm_sdk`.
 
 ## Instructions
 
 ### Requirements
 
-* Python 3.10 or newer
-* `uv`
+- Python 3.10 or newer
+- `uv`
+- internet access for the initial model download
 
-### Project layout
+### Installation
+
+From the repository root:
+
+```bash
+uv sync
+make install
+```
+
+The `make install` target performs the project setup and installs the local SDK package:
+
+```bash
+uv sync
+uv pip install ./llm_sdk
+```
+
+### Execution
+
+Run the project with the default input and output files:
+
+```bash
+make run
+```
+
+Equivalent direct invocation:
+
+```bash
+uv run python3 -m src
+```
+
+Custom input and output paths can be provided with flags:
+
+```bash
+uv run python3 -m src \
+  --functions_definition data/input/functions_definition.json \
+  --input data/input/function_calling_tests.json \
+  --output data/output/function_calling_results.json
+```
+
+### Project structure
 
 ```text
 call_me_maybe/
@@ -76,137 +82,176 @@ call_me_maybe/
 │   └── output/
 ├── llm_sdk/
 │   └── __init__.py
+├── moulinette/
+│   ├── pyproject.toml
+│   └── moulinette/
+│       ├── __main__.py
+│       ├── extract_functions_infos.py
+│       ├── functions_definition.py
+│       ├── generate_tests_and_corrections.py
+│       └── output_formatter.py
 ├── src/
 │   ├── __main__.py
-│   ├── engine.py
+│   ├── fsm.py
 │   └── parsing.py
 ├── Makefile
 ├── pyproject.toml
-└── README.md
-└── uv.lock
+├── README.md
+├── uv.lock
+└── .gitignore
 ```
 
-### Installation
+## Algorithm explanation
 
-Install dependencies with:
+The project uses constrained decoding instead of letting the model freely generate any text.
 
-```bash
-uv sync
-make install
+At each generation step, the decoder operates in several stages:
+
+1. Prefix mode
+   - The model is forced to follow the fixed JSON structure before the function name.
+   - This includes the literal JSON keys such as `"prompt"`, `"name"`, and the start of the `"parameters"` object.
+
+2. Function-name selection
+   - The allowed function names are stored in a prefix tree.
+   - During this phase, the model can only emit tokens that continue at least one valid function name.
+   - This prevents invalid or unknown function names from being generated.
+
+3. Static argument layout
+   - After the function name is accepted, the decoder enforces JSON punctuation and argument keys.
+   - Braces, commas, quotes, and key names are generated deterministically.
+
+4. Dynamic parameter generation
+   - The model is allowed to generate values for the current parameter.
+   - The parameter type is checked against the finite-state machine to ensure the generated value matches the expected pattern.
+   - When the value is complete, the decoder switches back to a static state for the next parameter or closes the object.
+
+5. Token masking
+   - Invalid tokens receive a mask that blocks them from being selected.
+   - The model then chooses the highest-scoring valid token among the remaining candidates.
+
+This approach reduces malformed output while still letting the model contribute meaningful parameter values.
+
+## Design decisions
+
+### Finite-state machine for valid JSON
+
+The core design choice is to model the output format as a finite-state machine. Static JSON structure and parameter types are encoded into the state graph, which makes generation both constrained and predictable.
+
+### Prefix-tree matching for function names
+
+Multiple function names may share the same prefix. A prefix tree lets the decoder validate every generated token incrementally instead of waiting for the full name to be assembled.
+
+### Type-aware parameter states
+
+Parameter values are not generated as arbitrary text. Instead, each parameter type (`string`, `integer`, `number`, `boolean`) has its own state logic. This makes it easier to enforce valid JSON and type-correct values.
+
+### Final validation with `json.loads()`
+
+Before writing the output file, the generated text is parsed using Python's JSON parser. If decoding fails, the program treats the result as invalid and stops instead of writing malformed JSON.
+
+## Performance analysis
+
+### Accuracy
+
+The constrained decoder significantly reduces invalid JSON and prevents the model from selecting names outside the allowed function list. However, the content of the argument values still depends on the language model and the quality of the prompt.
+
+### Speed
+
+The implementation precomputes valid transitions for the static layout and the parameter types. This avoids re-checking the entire vocabulary from scratch at every step. The main remaining cost is the model inference itself.
+
+### Reliability
+
+The JSON validation step improves reliability by rejecting malformed output before saving results. The main remaining reliability risk is semantic correctness of generated parameter values, which depends on the model’s reasoning capability and the prompt formulation.
+
+## Challenges faced
+
+### Tokenizer mismatch between tokens and characters
+
+Language models generate tokenizer tokens, not always plain characters. Some tokens contain spaces or special representations, so the implementation must normalize token strings before matching them against the finite-state graph.
+
+### Escaping quotes in prompt strings
+
+User prompts can contain quotes and backslashes. These must be escaped correctly so they remain valid JSON strings and do not break the generated output.
+
+### Distinguishing JSON values from Python values
+
+The output must ultimately be written as valid JSON, not as a Python representation string. This required careful handling of `json.loads()` and `json.dump()` so the final file contains real JSON objects, not serialized strings.
+
+### Type-specific numeric handling
+
+Integer and floating-point values require different constraints. The project had to distinguish between `integer` and `number` generation to avoid invalid numeric outputs.
+
+## Testing strategy
+
+The implementation was validated through:
+
+- valid function-definition JSON files,
+- invalid function-definition JSON files,
+- prompts that map to different functions,
+- functions with no parameters,
+- functions with one parameter,
+- functions with multiple parameters,
+- prompts containing single and double quotes,
+- malformed generated JSON to confirm failure handling,
+- missing input files and invalid output paths,
+- CLI flags for custom function-definition, input, and output paths.
+
+The testing focused on two things:
+
+1. checking that the static JSON structure is respected,
+2. ensuring that generated function names remain within the allowed set.
+
+## Example usage
+
+Example function definition:
+
+```json
+[
+  {
+    "name": "fn_multiply_numbers",
+    "description": "Multiply two numbers together and return their product.",
+    "parameters": {
+      "a": { "type": "number" },
+      "b": { "type": "number" }
+    },
+    "returns": { "type": "number" }
+  }
+]
 ```
 
-### Execution
+Example prompt file:
 
-Run the program with default input and output paths:
-
-```bash
-make run
-```
-
-Equivalent command:
-
-```bash
-uv run python -m src
-```
-
-Custom paths can be provided with flags:
-
-```bash
-uv run python -m src \
-  --functions_definition data/input/functions_definition.json \
-  --input data/input/function_calling_tests.json \
-  --output data/output/function_calling_results.json
-```
-
-## Example Usage
-
-Example input prompt:
-
-```text
-Replace all numbers in "Hello 34 I'm 233 years old" with NUMBERS
+```json
+[
+  {
+    "prompt": "What is the product of 3 and 5?"
+  }
+]
 ```
 
 Example generated result:
 
 ```json
-{
-  "prompt": "Replace all numbers in \"Hello 34 I'm 233 years old\" with NUMBERS",
-  "name": "fn_substitute_string_with_regex",
-  "parameters": {
-    "source_string": "Hello 34 I'm 233 years old",
-    "regex": "34|233",
-    "replacement": "NUMBERS"
+[
+  {
+    "prompt": "What is the product of 3 and 5?",
+    "name": "fn_multiply_numbers",
+    "parameters": {
+      "a": 3,
+      "b": 5
+    }
   }
-}
+]
 ```
-
-## Performance Analysis
-
-### Accuracy
-
-Constrained decoding guarantees that generated function names belong to the allowed function list. It also forces JSON structure and argument keys, reducing malformed output compared with unconstrained generation.
-
-Argument values are still generated by the model, so their semantic accuracy depends on the selected model and prompt quality.
-
-### Speed
-
-The engine precomputes valid token IDs for static layouts and vectorized prefix matching nodes. This avoids checking every vocabulary token from scratch during every generation step.
-
-The main performance cost is model inference. The current implementation requests logits for each generated token.
-
-### Reliability
-
-The implementation validates each final output using `json.loads()`. This catches malformed JSON before results are written to disk.
-
-The constrained structure improves reliability, but dynamic argument values can still contain characters that require JSON escaping. Future improvements could constrain dynamic values with JSON-string escaping rules.
-
-## Challenges Faced
-
-### Tokenizer tokens do not always match characters
-
-Language models generate tokenizer tokens that may contain multiple characters, spaces, or newlines. The implementation sanitizes tokenizer-specific representations such as `Ċ` and `Ġ` before matching them against the expected layout.
-
-### Escaping quotes in prompts
-
-A prompt can contain double quotes, which must be escaped in JSON. replacing quote characters is the solution used.
-
-### Distinguishing Python objects from JSON strings
-
-`json.loads()` converts JSON text into Python objects. `json.dumps()` converts Python objects back into JSON text. The output list must contain Python dictionaries before calling `json.dump()`, otherwise the final file becomes a list of escaped JSON strings.
-
-### representing floats and integers
-
-having to check the type of each arg to force the model to generate it correctely.
-
-## Testing Strategy
-
-The implementation was tested with:
-
-* Valid function-definition JSON files.
-* Invalid function-definition JSON files.
-* Prompts requiring different functions.
-* Functions with no parameters.
-* Functions with one parameter.
-* Functions with multiple parameters.
-* Prompts containing single quotes and double quotes.
-* Invalid generated JSON to confirm that `json.JSONDecodeError` is handled.
-* Missing input files and invalid output paths.
-* CLI flags for custom function-definition, input, and output paths.
-
-Static decoding was checked by verifying that generated JSON prefixes, field names, commas, braces, and quotes match the expected layout. vectorized prefix matching decoding was checked by ensuring generated function names always belong to the allowed function list.
 
 ## Resources
 
-* Python JSON documentation: https://docs.python.org/3/library/json.html
-* Python argparse documentation: https://docs.python.org/3/library/argparse.html
-* Python typing documentation: https://docs.python.org/3/library/typing.html
-* Hugging Face Transformers documentation: https://huggingface.co/docs/transformers
-* Hugging Face tokenizers documentation: https://huggingface.co/docs/tokenizers
-* PyTorch documentation: https://pytorch.org/docs/stable/index.html
-* Constrained decoding overview: https://huggingface.co/blog/constrained-beam-search
+- Python JSON documentation: https://docs.python.org/3/library/json.html
+- Constrained decoding overview: https://huggingface.co/blog/constrained-beam-search
+- finite state machine: https://www.youtube.com/watch?v=e0qB-jFavrM
+- a guide: https://www.aidancooper.co.uk/constrained-decoding/
 
-### AI Usage
 
-AI was used as a learning and debugging aid. It was used to explain Python concepts such as JSON serialization, command-line arguments, package imports, type checking, and error messages. It was also used to review implementation ideas for vectorized prefix matching-based constrained decoding and README structure.
+### AI usage
 
-The implementation, project architecture, testing, debugging decisions, and final code were completed and verified by the author.
+AI was used as a learning and debugging aid during this project.

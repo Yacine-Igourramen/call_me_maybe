@@ -3,9 +3,11 @@ from .parsing import valid
 from .fsm import FSM
 import sys
 from pathlib import Path
+import time
 
 
 def main() -> None:
+    now = time.perf_counter()
     input_path: str = "data/input/function_calling_tests.json"
     output_path: str = "data/output/function_calling_results.json"
     func_def_path: str = "data/input/functions_definition.json"
@@ -57,6 +59,7 @@ def main() -> None:
     j = 1
     data = []
     for prompt in prompts:
+        prompt = prompt.replace("\\", "\\\\").replace('"', '\\"')
         context = (
             "Select the function that best matches the request.\n\n"
             "--- FUNCTIONS ---\n"
@@ -115,6 +118,8 @@ def main() -> None:
         print("Data contains a non-JSON type:", e)
     except OSError:
         print("output directory doesn't exist or file doesn't have permission")
+    how_long: float = time.perf_counter() - now
+    print(f"Took {how_long/60:.1f} minutes")
 
 
 if __name__ == "__main__":

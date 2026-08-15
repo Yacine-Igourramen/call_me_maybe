@@ -8,7 +8,6 @@ run:
 
 install:
 	@uv sync
-	@uv pip install ./llm_sdk
 
 debug:
 	@$(COMPILER) -m pdb $(FILE)
