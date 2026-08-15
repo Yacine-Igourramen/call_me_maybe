@@ -1,8 +1,11 @@
-from typing import Any, Optional
+from typing import Any, Optional, ClassVar
 from pydantic import BaseModel, Field, ConfigDict
+from llm_sdk import Small_LLM_Model
+import numpy as np
+import json
 
 
-class ArgumentFSM(BaseModel):
+class FSM(BaseModel):
     """
     Finite-state machine for constrained JSON parameter generation.
     """
@@ -11,35 +14,65 @@ class ArgumentFSM(BaseModel):
         validate_assignment=False,
     )
 
-    parameters: dict[str, Any]
-    vocab_pins: dict[str, dict[str, int]]
-    all_vocab: dict[str, int]
-    start_string: str = '", "parameters": {'
+    start_string: str
+    allowed_choices: list[str]
+    context: str
 
-    state: int = Field(default=0)
-    current_state: int = Field(default=0)
+    state: int = 0
+    current_state: int = 0
 
     prefix_tree: dict[int, dict[Optional[str], int]] = Field(
-        default_factory=dict
-    )
+        default_factory=dict)
     cache: dict[int, list[int]] = Field(
-        default_factory=dict
-    )
+        default_factory=dict)
+
+    model_object: ClassVar[Small_LLM_Model] = Small_LLM_Model()
+    all_vocab: dict[str, int] = Field(
+        default_factory=dict)
+    vocab_pins: dict[str, dict[str, int]] = Field(default_factory=dict)
+    feed: list[int] = Field(default_factory=list)
 
     def model_post_init(self, __context: Any) -> None:
-        self.build_state()
+        self.feed = self.model_object.encode(self.context)[0].tolist()
+        with open(self.model_object.get_path_to_vocab_file(), "r") as f:
+            self.all_vocab: dict[str, int] = json.load(f)
+        for tstr, tid in self.all_vocab.items():
+            if not tstr:
+                continue
+            key = tstr[0]
+            self.vocab_pins.setdefault(key, {})[tstr] = tid
+        self.build_static_state(self.start_string)
 
     def tr_token(self, string: str) -> str:
-        # map spaces and newlines to the model's special token markers
         return string.replace(" ", "Ġ").replace("\n", "Ċ")
 
-    def build_state(self) -> None:
-        start = self.tr_token(self.start_string)
+    def build_static_state(self, string: str) -> None:
+        self.state = 0
+        self.current_state = 0
+        self.prefix_tree.clear()
+        self.cache.clear()
+        start = self.tr_token(string)
         for c in start:
             self.prefix_tree.setdefault(self.state, {})[c] = self.state + 1
             self.state += 1
 
-        num_params = len(self.parameters)
+    def build_func_state(self):
+        self.state = 0
+        self.current_state = 0
+        self.prefix_tree.clear()
+        self.cache.clear()
+        for name in self.allowed_choices:
+            t_state = self.state
+            for c in name:
+                self.prefix_tree.setdefault(t_state, {})[c] = t_state + 1
+                t_state += 1
+
+    def build_arg_state(self, parameters) -> None:
+        num_params = len(parameters)
+        self.state = 0
+        self.current_state = 0
+        self.prefix_tree.clear()
+        self.cache.clear()
         if num_params == 0:
             tmp = self.prefix_tree.setdefault(self.state, {})
             tmp["}"] = self.state + 1
@@ -48,9 +81,8 @@ class ArgumentFSM(BaseModel):
             self.state += 2
             return
 
-        for index, (key, param_obj) in enumerate(self.parameters.items(), 1):
+        for index, (key, param_obj) in enumerate(parameters.items(), 1):
             prefix = f' "{key}": ' if index > 1 else f'"{key}": '
-
             for c in self.tr_token(prefix):
                 tmp = self.prefix_tree.setdefault(self.state, {})
                 tmp[c] = self.state + 1
@@ -76,17 +108,12 @@ class ArgumentFSM(BaseModel):
                 self.state = next_s
 
     def build_type_state(self, param_obj: Any) -> list[int]:
-        if hasattr(param_obj, "type"):
-            param_type = param_obj.type
-        elif isinstance(param_obj, dict):
-            param_type = param_obj.get("type", "string")
-        else:
-            param_type = "string"
-
-        if param_type == "integer":
+        if param_obj == "integer":
             return self.build_int_state()
-        elif param_type == "number":
+        elif param_obj == "number":
             return self.build_number_state()
+        elif param_obj == "boolean":
+            return self.build_bool_state()
         else:
             return self.build_string_state()
 
@@ -176,6 +203,22 @@ class ArgumentFSM(BaseModel):
         self.state += 3
         return [base_s + 2, base_s + 3]
 
+    def build_bool_state(self) -> list[int]:
+        entry_s = self.state
+        next_state = self.state + 1
+        exits: list[int] = []
+
+        for option in ("true", "false"):
+            t_state = entry_s
+            for c in option:
+                self.prefix_tree.setdefault(t_state, {})[c] = next_state
+                t_state = next_state
+                next_state += 1
+            exits.append(t_state)
+
+        self.state = next_state
+        return exits
+
     def allowed_token(self, state: int) -> list[int]:
         allowed_tokens: list[int] = []
 
@@ -218,12 +261,15 @@ class ArgumentFSM(BaseModel):
         return allowed_tokens
 
     def mask_logits(
-            self, logits: Any, allowed_tokens: list[int]) -> list[float]:
-        masked: list[float] = [float("-inf")] * len(logits)
+            self, allowed_tokens: list[int]) -> list[float]:
+        logits = self.model_object.get_logits_from_input_ids(self.feed)
+        masked: list[float] = [-np.inf] * len(logits)
         for token_id in allowed_tokens:
             if token_id < len(logits):
                 masked[token_id] = logits[token_id]
-        return masked
+        chosen: int = np.argmax(masked)
+        self.feed.append(chosen)
+        return chosen, self.model_object.decode(chosen)
 
     def transition(self, token_str: str) -> None:
         for c in self.tr_token(token_str):

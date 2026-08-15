@@ -14,16 +14,10 @@ class prompt_valid(BaseModel):
 
 
 def args_parser(args: dict) -> dict:
-    type_map = {
-        "string": str,
-        "number": float,
-        "integer": int,
-        "boolean": bool,
-    }
     fields = {}
 
     for field_name, info in args.items():
-        python_type = type_map[info["type"]]
+        python_type = info["type"]
         fields[field_name] = python_type
 
     return fields
